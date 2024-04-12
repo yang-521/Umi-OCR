@@ -25,19 +25,19 @@ TabPage {
         setMsnState("none")
     }
     // TODO: 测试用
-    // Timer {
-    //     interval: 200
-    //     running: true
-    //     onTriggered: {
-    //         addImages(
-    //             [
-    //                 "D:/Pictures/Screenshots/test",
-    //             ]
-    //         )
-    //         console.log("自动添加！！！！！！！！！！！！！")
-    //         // ocrStart()
-    //     }
-    // }
+    Timer {
+        interval: 200
+        running: true
+        onTriggered: {
+            addImages(
+                [
+                    "D:/Pictures/Screenshots/test",
+                ]
+            )
+            console.log("自动添加！！！！！！！！！！！！！")
+            // ocrStart()
+        }
+    }
 
     // 将需要查询的图片路径列表paths发送给python。传入值是没有 file:/// 开头的纯字符串的列表。
     function addImages(paths) {
@@ -418,5 +418,20 @@ TabPage {
         pathPreview: msnPreview
         configsComp: tabPage.configsComp
         configKey: "tbpu.ignoreArea"
+    }
+
+    // 临时，测试按钮
+    Button_ {
+        anchors.left: parent.left
+        anchors.top: parent.top
+        text_: "暂停"
+        onClicked: tabPage.callPy("msnPause", true)
+    }
+    Button_ {
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.leftMargin: 30
+        text_: "恢复"
+        onClicked: tabPage.callPy("msnPause", false)
     }
 }

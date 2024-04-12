@@ -9,6 +9,14 @@ from uuid import uuid4  # 唯一ID
 import time
 
 
+"""任务状态state:
+    wait  - 等待开始
+    run   - 进行中
+    stop  - 要求停止
+    pause - 暂停中
+"""
+
+
 # 代替 self._threadPool.start ，但是检查线程池是否满，并扩充。
 def threadPoolStart(threadPool, *args):
     activeThreadCount = threadPool.activeThreadCount()
@@ -26,6 +34,7 @@ class Mission:
         self._task = None  # 异步任务对象
         self._taskMutex = QMutex()  # 任务对象的锁
         self._threadPool = QThreadPool.globalInstance()  # 全局线程池
+        self._pauseCondition = Condition()  # 控制任务暂停的同步器
         # 任务队列调度方式
         # 1111 : 轮询调度，轮流取每个队列的第1个任务
         # 1234 : 顺序调度，将首个队列所有任务处理完，再进入下一个队列
@@ -59,16 +68,16 @@ class Mission:
                 # print(f"补充空回调函数{k}")
                 # msnInfo[k] = (lambda key: lambda *e: print(f"空回调 {key}"))(k)
                 msnInfo[k] = lambda *e: None
-        # 任务状态state:  waiting 等待开始， running 进行中， stop 要求停止
-        msnInfo["state"] = "waiting"
+        msnInfo["state"] = "wait"
         msnInfo["msnID"] = msnID
         # 添加到任务队列
         self._msnMutex.lock()  # 上锁
         self._msnInfoDict[msnID] = msnInfo  # 添加任务信息
         self._msnListDict[msnID] = msnList  # 添加任务队列
         self._msnMutex.unlock()  # 解锁
-        # 启动任务
-        self._startMsns()
+        self._startMsns()  # 启动任务
+        with self._pauseCondition:  # 释放暂停堵塞
+            self._pauseCondition.notify()
         # 返回任务id
         return msnID
 
@@ -78,6 +87,24 @@ class Mission:
         if msnID in self._msnListDict:
             self._msnInfoDict[msnID]["state"] = "stop"  # 设为停止状态
         self._msnMutex.unlock()  # 解锁
+        with self._pauseCondition:  # 释放暂停堵塞
+            self._pauseCondition.notify()
+
+    # 任务队列暂停 (True) / 恢复进行 (False)
+    # TODO: 如果队列为 init ，则无法设置暂停状态。
+    def pauseMissionList(self, msnID, isPause=True):
+        self._msnMutex.lock()  # 上锁
+        if msnID in self._msnListDict:
+            # 设置暂停/继续状态
+            state = self._msnInfoDict[msnID]["state"]
+            if state == "run":
+                self._msnInfoDict[msnID]["state"] = "pause"
+            elif state == "pause":
+                self._msnInfoDict[msnID]["state"] = "run"
+        self._msnMutex.unlock()  # 解锁
+        print("暂停" if isPause else "恢复", msnID)
+        with self._pauseCondition:  # 释放暂停堵塞
+            self._pauseCondition.notify()
 
     # 停止全部任务
     def stopAllMissions(self):
@@ -85,6 +112,19 @@ class Mission:
         for msnID in self._msnListDict:
             self._msnInfoDict[msnID]["state"] = "stop"
         self._msnMutex.unlock()  # 解锁
+        with self._pauseCondition:  # 释放暂停堵塞
+            self._pauseCondition.notify()
+
+    # 查询当前是否所有任务处于暂停状态，返回 True / False
+    def isAllPause(self):
+        flag = True
+        self._msnMutex.lock()  # 上锁
+        for msnID in self._msnListDict:
+            if self._msnInfoDict[msnID]["state"] != "pause":
+                flag = False
+                break
+        self._msnMutex.unlock()  # 解锁
+        return flag
 
     # 获取每一条任务队列长度
     def getMissionListsLength(self):
@@ -171,11 +211,17 @@ class Mission:
             msnList = self._msnListDict[dictKey]
             self._msnMutex.unlock()  # 解锁
 
-            # 3. 检查任务是否要求停止
+            # 3. 检查任务是否要求停止 / 暂停
             if msnInfo["state"] == "stop":
                 self._msnDictDel(dictKey)
                 msnInfo["onEnd"](msnInfo, "[Warning] Task stop.")
-                continue
+                continue  # 跳过当前队列
+            if msnInfo["state"] == "pause":
+                # 如果所有任务暂停，则堵塞当前进程
+                if self.isAllPause():
+                    with self._pauseCondition:
+                        self._pauseCondition.wait()
+                continue  # 跳过当前队列
 
             # 4. 前处理，检查、更新参数
             preFlag = self.msnPreTask(msnInfo)
@@ -189,8 +235,8 @@ class Mission:
                 continue
 
             # 5. 首次任务
-            if msnInfo["state"] == "waiting":
-                msnInfo["state"] = "running"
+            if msnInfo["state"] == "wait":
+                msnInfo["state"] = "run"
                 msnInfo["onStart"](msnInfo)
 
             # 6. 执行任务，并记录时间
@@ -203,10 +249,12 @@ class Mission:
                 res["time"] = t2 - t1
                 res["timestamp"] = t2
 
-            # 7. 再次检查任务是否要求停止
+            # 7. 再次检查任务是否要求停止 / 堵塞
             if msnInfo["state"] == "stop":
                 self._msnDictDel(dictKey)
                 msnInfo["onEnd"](msnInfo, "[Warning] Task stop.")
+                continue
+            if msnInfo["state"] == "pause":
                 continue
 
             # 8. 不停止，则上报该任务

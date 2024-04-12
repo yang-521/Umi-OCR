@@ -119,6 +119,9 @@ class BatchOCR(Page):
     def msnStop(self):  # 任务停止（异步）
         MissionOCR.stopMissionList(self.msnID)
 
+    def msnPause(self, flag=True):  # 任务暂停
+        MissionOCR.pauseMissionList(self.msnID, flag)
+
     def msnPreview(self, path, argd):  # 快速进行一次任务，主要用于预览
         msnInfo = {
             "onGet": self._onPreview,
