@@ -159,6 +159,7 @@ class _MissionDocClass(Mission):
             # 获取元素 https://pymupdf.readthedocs.io/en/latest/_images/img-textpage.png
             # 确保越界图像能被采集 https://github.com/pymupdf/PyMuPDF/issues/3171
             p = page.get_text("dict", clip=fitz.INFINITE_RECT())
+            rect = page.rect
             for t in p["blocks"]:  # 遍历区块（段落）
                 # 图片
                 if t["type"] == 1 and (
@@ -168,32 +169,62 @@ class _MissionDocClass(Mission):
                     bbox = t["bbox"]  # 图片包围盒
                     # 图片视觉大小、原始大小、缩放比例
                     w1, h1 = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                    w2, h2 = t["width"], t["height"]
+                    # 图片实际大小
+                    with Image.open(BytesIO(t["image"])) as pimg:
+                        w2, h2 = pimg.size
                     # 特殊情况：图片宽高为0
                     if w2 <= 0 or h2 <= 0:
                         continue
                     # 单独计算宽高的缩放比例
                     scale_w = w1 / w2
                     scale_h = h1 / h2
-                    # 如果页面有旋转，逆向旋转图片字节
+                    def rotate_rectangle(rect, bbox, angle):
+                        if angle in (90, 270):  # 当角度为90或270时交换rect宽高
+                            rect = [rect[0], rect[1], rect[3], rect[2]]
+                        # 限制 bbox 的范围
+                        x1 = max(0, bbox[0])
+                        y1 = max(0, bbox[1])
+                        x2 = max(0, rect[2] - bbox[2]) if bbox[2] <= rect[2] else 0
+                        y2 = max(0, rect[3] - bbox[3]) if bbox[3] <= rect[3] else 0
+                        # 使用字典映射角度与坐标的对应关系
+                        mapping = {
+                            90: (y2, x1, y1, x2),
+                            180: (x2, y2, x1, y1),
+                            270: (y1, x2, y2, x1),
+                            0: (x1, y1, x2, y2),
+                        }
+                        return mapping.get(angle, (x1, y1, x2, y2))  # 默认返回角度为0的情况
+                    def get_scaling_factor(size):
+                        if size >= 145.017:
+                            return 1, 1
+                        elif size <= 96.64:
+                            return 0.99, 0.99
+                        elif 48.32 < size <= 96.64:
+                            return 0.98, 0.98
+                        else:
+                            return 0.97, 0.97
+                    # 如果页面有旋转，裁取实际图像大小
                     if protation != 0:
-                        logger.debug(f"P{pno} - 旋转 {protation} °")
+                        print(f"    P{pno} - 旋转 {protation} °")
+                        size = rect[2] * rect[3] / 5184
+                        scale_w, scale_h = get_scaling_factor(size)
+                        Left, Top, Right, Bottom = rotate_rectangle(rect, bbox, protation)  # 计算裁剪像素
+                        bbox = (Left, Top, Right, Bottom)
+                        p = page.get_pixmap()  # 获取页面大小
+                        bytes = p.tobytes("png")  # 转为字节对象
                         try:
-                            with Image.open(BytesIO(img_bytes)) as pimg:
+                            with Image.open(BytesIO(bytes)) as pimg:
                                 # 记录原图格式
                                 format = pimg.format
                                 if not format:
                                     format = "PNG"
-                                # PDF的旋转是顺时针，需要逆时针旋转图片
-                                pimg = pimg.rotate(-protation, expand=True)
-                                # 将旋转后的图片转回bytes
+                                pimg = pimg.crop((Left, Top, page.rect.width - Right, page.rect.height - Bottom))  # 裁剪矩形
+                                # 将裁剪后的图片转回bytes
                                 buffered = BytesIO()
                                 pimg.save(buffered, format=format)
                                 img_bytes = buffered.getvalue()
-                        except Exception:
-                            logger.error(
-                                "旋转文档图片异常。", exc_info=True, stack_info=True
-                            )
+                        except Exception as e:
+                            print(f"[Error] Rotation doc image:", e)
                     # 记录图片
                     imgs.append(
                         {
@@ -203,6 +234,30 @@ class _MissionDocClass(Mission):
                             "scale_h": scale_h,
                         }
                     )
+                # 文本
+                elif t["type"] == 0 and (
+                    extractionMode == "textOnly" or extractionMode == "mixed"
+                ):
+                    l = len(t["lines"]) - 1
+                    for index, line in enumerate(t["lines"]):  # 遍历每一行
+                        text = ""
+                        for span in line["spans"]:  # 遍历每一文本块
+                            text += span["text"]
+                        if text:
+                            b = line["bbox"]
+                            tb = {
+                                "box": [
+                                    [b[0], b[1]],
+                                    [b[2], b[1]],
+                                    [b[2], b[3]],
+                                    [b[0], b[3]],
+                                ],
+                                "text": text,
+                                "score": 1,
+                                "end": "\n" if index == l else "",  # 结尾符
+                                "from": "text",  # 来源：直接提取文本
+                            }
+                            tbs.append(tb)
                 # 文本
                 elif t["type"] == 0 and (
                     extractionMode == "textOnly" or extractionMode == "mixed"
