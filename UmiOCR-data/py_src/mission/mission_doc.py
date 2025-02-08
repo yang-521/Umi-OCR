@@ -258,30 +258,6 @@ class _MissionDocClass(Mission):
                                 "from": "text",  # 来源：直接提取文本
                             }
                             tbs.append(tb)
-                # 文本
-                elif t["type"] == 0 and (
-                    extractionMode == "textOnly" or extractionMode == "mixed"
-                ):
-                    l = len(t["lines"]) - 1
-                    for index, line in enumerate(t["lines"]):  # 遍历每一行
-                        text = ""
-                        for span in line["spans"]:  # 遍历每一文本块
-                            text += span["text"]
-                        if text:
-                            b = line["bbox"]
-                            tb = {
-                                "box": [
-                                    [b[0], b[1]],
-                                    [b[2], b[1]],
-                                    [b[2], b[3]],
-                                    [b[0], b[3]],
-                                ],
-                                "text": text,
-                                "score": 1,
-                                "end": "\n" if index == l else "",  # 结尾符
-                                "from": "text",  # 来源：直接提取文本
-                            }
-                            tbs.append(tb)
         # 补充结尾符
         for i1 in range(len(tbs) - 1):
             if tbs[i1]["end"]:  # 跳过已有结尾符的
